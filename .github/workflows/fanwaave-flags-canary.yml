@@ -83,8 +83,21 @@ jobs:
       - name: Verify Fanwaave secret argv boundary and immutable dependency pins
         run: python3 canary/fanwaave-flags/check.py
 
-      - name: Prove test execution did not rewrite checked-out source
+      - name: Prove tests changed only expected build outputs
+        shell: bash
         run: |
-          git -C sources/flags-2-env diff --exit-code
+          set -euo pipefail
+
+          # flags-2-env intentionally tracks native build products. Rebuilding on a
+          # newer hosted compiler can change their bytes without changing source.
+          # Fail closed on any tracked change outside build/ instead of treating
+          # compiler-specific binary churn as an authored-source mutation.
+          git -C sources/flags-2-env diff --exit-code -- . ':(exclude)build/**'
+          unexpected="$(git -C sources/flags-2-env diff --name-only | grep -Ev '^build/' || true)"
+          if [[ -n "$unexpected" ]]; then
+            printf 'unexpected flags-2-env source mutation:\n%s\n' "$unexpected" >&2
+            exit 1
+          fi
+
           git -C sources/fanwaave-web diff --exit-code
           git -C sources/fanwaave-api diff --exit-code
