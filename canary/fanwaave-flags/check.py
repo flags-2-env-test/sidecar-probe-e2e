@@ -56,31 +56,23 @@ def assert_secret_env_only(root: Path, env_key: str):
 
 
 def main():
-    web_cargo = cargo_text(WEB)
-    api_cargo = cargo_text(API)
-    for text in (web_cargo, api_cargo):
+    for root in (WEB, API):
+        text = cargo_text(root)
         assert_pin(text, "flags-2-env", FLAGS_PIN)
         assert_pin(text, "fanwaave-lib-core", LIB_PIN)
 
-    assert_secret_env_only(WEB, "FANWAAVE_DATABASE_URL")
-    assert_secret_env_only(API, "FANWAAVE_NATS_URL")
-
-    for root in (WEB, API):
         flags = source_text(root, "src/flags.rs")
         if "provided_flags" not in flags:
             raise AssertionError(f"{root.name} does not preserve explicit argv provenance")
         if "parsed.flags" in flags:
             raise AssertionError(f"{root.name} regressed to default-bearing parsed.flags")
 
-    web_cfg = source_text(WEB, "src/config.rs")
-    api_cfg = source_text(API, "src/config.rs")
-    if "SecretFromArgv" not in web_cfg or "FANWAAVE_DATABASE_URL" not in load_toml(WEB, ".fanwaave-cfg.toml")["env"][1].get("key", ""):
-        # The source test need only prove the runtime surfaces the domain resolver error;
-        # the exact binding assertion above is authoritative for the env name.
-        if "resolve_fanwaave_config" not in source_text(WEB, "src/main.rs"):
-            raise AssertionError("web server is not using Fanwaave domain resolution")
-    if "resolve_fanwaave_config" not in source_text(API, "src/main.rs"):
-        raise AssertionError("API server is not using Fanwaave domain resolution")
+        main_source = source_text(root, "src/main.rs")
+        if "resolve_fanwaave_config" not in main_source:
+            raise AssertionError(f"{root.name} is not using Fanwaave domain resolution")
+
+    assert_secret_env_only(WEB, "FANWAAVE_DATABASE_URL")
+    assert_secret_env_only(API, "FANWAAVE_NATS_URL")
 
     print("fanwaave flags/secret boundary canary: passed")
 
