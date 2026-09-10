@@ -1,0 +1,9 @@
+[package]
+name = "fanwaave-flags-regression-canary"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[dependencies]
+flags2env = { git = "https://github.com/flags-2-env/flags-2-env.git", rev = "b708a041531a830bd49f030250836896096e7abd" }
+tempfile = "3"

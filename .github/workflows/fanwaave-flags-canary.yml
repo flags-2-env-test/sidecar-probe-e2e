@@ -1,0 +1,103 @@
+name: Fanwaave flags secret-boundary canary
+
+on:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  flags-canary:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      FLAGS2ENV_SOURCE: ${{ github.workspace }}/sources/flags-2-env
+      FANWAAVE_WEB: ${{ github.workspace }}/sources/fanwaave-web
+      FANWAAVE_API: ${{ github.workspace }}/sources/fanwaave-api
+    steps:
+      - name: Check out test harness
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          show-progress: false
+
+      - name: Check out exact strict flags-2-env revision
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: flags-2-env/flags-2-env
+          ref: b708a041531a830bd49f030250836896096e7abd
+          path: sources/flags-2-env
+          persist-credentials: false
+          show-progress: false
+
+      - name: Check out merged Fanwaave web consumer
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: fanwaave/fanwaave-web-server.rs
+          ref: 7d757ce934f93a77cd8fea93f34703ec85cc4386
+          path: sources/fanwaave-web
+          persist-credentials: false
+          show-progress: false
+
+      - name: Check out merged Fanwaave API consumer
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: fanwaave/fanwaave-api-server.rs
+          ref: 996e93f611b88ffe803cd745362084d6fb4553f8
+          path: sources/fanwaave-api
+          persist-credentials: false
+          show-progress: false
+
+      - name: Verify immutable source pins
+        run: |
+          set -euo pipefail
+          test "$(git -C sources/flags-2-env rev-parse HEAD)" = b708a041531a830bd49f030250836896096e7abd
+          test "$(git -C sources/fanwaave-web rev-parse HEAD)" = 7d757ce934f93a77cd8fea93f34703ec85cc4386
+          test "$(git -C sources/fanwaave-api rev-parse HEAD)" = 996e93f611b88ffe803cd745362084d6fb4553f8
+
+      - name: Install Node 22 and Rust stable
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "22"
+          package-manager-cache: false
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c
+
+      - name: Re-run exact flags-2-env core suite
+        working-directory: sources/flags-2-env
+        run: make test
+
+      - name: Prove stale versus current config audit semantics
+        run: cargo test --manifest-path canary/fanwaave-flags/Cargo.toml
+
+      - name: Re-run merged Fanwaave web tests
+        working-directory: sources/fanwaave-web
+        run: cargo test --all-targets
+
+      - name: Re-run merged Fanwaave API tests
+        working-directory: sources/fanwaave-api
+        run: cargo test --all-targets
+
+      - name: Verify Fanwaave secret argv boundary and immutable dependency pins
+        run: python3 canary/fanwaave-flags/check.py
+
+      - name: Prove tests changed only expected build outputs
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          # flags-2-env intentionally tracks native build products. Rebuilding on a
+          # newer hosted compiler can change their bytes without changing source.
+          # Fail closed on any tracked change outside build/ instead of treating
+          # compiler-specific binary churn as an authored-source mutation.
+          git -C sources/flags-2-env diff --exit-code -- . ':(exclude)build/**'
+          unexpected="$(git -C sources/flags-2-env diff --name-only | grep -Ev '^build/' || true)"
+          if [[ -n "$unexpected" ]]; then
+            printf 'unexpected flags-2-env source mutation:\n%s\n' "$unexpected" >&2
+            exit 1
+          fi
+
+          git -C sources/fanwaave-web diff --exit-code
+          git -C sources/fanwaave-api diff --exit-code
