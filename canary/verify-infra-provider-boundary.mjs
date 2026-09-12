@@ -53,7 +53,8 @@ export function verifyProductionRoot(root) {
     if (existsSync(readme)) {
       const policy = readFileSync(readme, 'utf8').toLowerCase();
       check(policy.includes('migration') && policy.includes('secret'), `${provider} policy incomplete`);
-      check(policy.includes('dedicated') || policy.includes(`organization: \`${EXPECTED_ORG}\``) || policy.includes(`organization exactly: \`${EXPECTED_ORG}\``), `${provider} dedicated ownership not documented`);
+      check(policy.includes('dedicated') && policy.includes(EXPECTED_ORG), `${provider} dedicated ownership not documented`);
+      check(!policy.includes('shared-provider organization fallback is allowed'), `${provider} permits shared provider fallback`);
     }
     for (const [lane, expectedEnv] of [['auth', authEnv], ['admin', adminEnv]]) {
       const dir = resolve(root, provider, lane, 'migrations');
