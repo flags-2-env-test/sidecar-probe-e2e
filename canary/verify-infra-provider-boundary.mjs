@@ -36,6 +36,23 @@ function validateTopology(topology) {
   return errors;
 }
 
+function validateProviderPolicy(source, provider) {
+  const policy = source.toLowerCase();
+  const errors = [];
+  if (!policy.includes('migration') || !policy.includes('secret')) errors.push(`${provider} policy incomplete`);
+  // The pinned production documentation expresses dedicated ownership as
+  // exact organization pairing. Accept that statement without relaxing the
+  // independently checked structured topology or the shared-placement ban.
+  const dedicated = policy.includes('dedicated') && policy.includes(EXPECTED_ORG);
+  const exactPairing = policy.includes(`organization paired exactly with github org \`${EXPECTED_ORG}\``);
+  if (!dedicated && !exactPairing) errors.push(`${provider} dedicated ownership not documented`);
+  if (!policy.includes('shared-provider organization placement is forbidden') ||
+      policy.includes('shared-provider organization fallback is allowed')) {
+    errors.push(`${provider} shared provider placement is not forbidden`);
+  }
+  return errors;
+}
+
 export function verifyProductionRoot(root) {
   const errors = [];
   const check = (condition, message) => { if (!condition) errors.push(message); };
@@ -51,10 +68,7 @@ export function verifyProductionRoot(root) {
     const readme = resolve(root, provider, 'README.md');
     check(existsSync(readme), `${provider}/README.md missing`);
     if (existsSync(readme)) {
-      const policy = readFileSync(readme, 'utf8').toLowerCase();
-      check(policy.includes('migration') && policy.includes('secret'), `${provider} policy incomplete`);
-      check(policy.includes('dedicated') && policy.includes(EXPECTED_ORG), `${provider} dedicated ownership not documented`);
-      check(!policy.includes('shared-provider organization fallback is allowed'), `${provider} permits shared provider fallback`);
+      errors.push(...validateProviderPolicy(readFileSync(readme, 'utf8'), provider));
     }
     for (const [lane, expectedEnv] of [['auth', authEnv], ['admin', adminEnv]]) {
       const dir = resolve(root, provider, lane, 'migrations');
@@ -89,7 +103,26 @@ function selfTest(root) {
     mutate(candidate);
     assert.ok(validateTopology(candidate).length > 0, `${name} unexpectedly passed`);
   }
-  return mutations.length;
+  let documentationNegativeCases = 0;
+  for (const provider of Object.keys(providerEnv)) {
+    const source = readFileSync(resolve(root, provider, 'README.md'), 'utf8');
+    assert.deepEqual(validateProviderPolicy(source, provider), []);
+    const dedicatedWording = source.replace('organization paired exactly with GitHub org', 'dedicated organization for GitHub org');
+    assert.deepEqual(validateProviderPolicy(dedicatedWording, provider), []);
+    const invalidDocs = [
+      ['wrong-owner', source.replaceAll(EXPECTED_ORG, 'another-org')],
+      ['inexact-pairing', source.replace('paired exactly', 'paired loosely')],
+      ['shared-placement', source.replace('placement is forbidden', 'placement is allowed')],
+      ['missing-placement-ban', source.replace('Shared-provider organization placement is forbidden.', '')],
+      ['fallback-allowed', `${source}\nShared-provider organization fallback is allowed.`],
+      ['missing-secret-policy', source.replaceAll('secret', 'ordinary')]
+    ];
+    for (const [name, candidate] of invalidDocs) {
+      assert.ok(validateProviderPolicy(candidate, provider).length > 0, `${provider}/${name} unexpectedly passed`);
+      documentationNegativeCases += 1;
+    }
+  }
+  return { topologyNegativeCases: mutations.length, documentationNegativeCases };
 }
 
 const root = resolve(process.argv[2] ?? 'production-infra');
@@ -98,5 +131,6 @@ if (errors.length) {
   for (const error of errors) console.error(`- ${error}`);
   process.exit(1);
 }
-const negativeCases = selfTest(root);
-console.log(JSON.stringify({ status: 'passed', productionRevision: EXPECTED_MERGE, negativeCases }));
+const cases = selfTest(root);
+console.log(JSON.stringify({ status: 'passed', productionRevision: EXPECTED_MERGE,
+  negativeCases: cases.topologyNegativeCases + cases.documentationNegativeCases, ...cases }));
