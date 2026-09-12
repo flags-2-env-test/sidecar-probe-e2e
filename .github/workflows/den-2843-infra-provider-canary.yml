@@ -1,0 +1,96 @@
+name: DEN-2843 flags infra provider canary
+
+on:
+  pull_request:
+    paths:
+      - 'canary/verify-infra-provider-boundary.mjs'
+      - '.github/workflows/den-2843-infra-provider-canary.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'canary/verify-infra-provider-boundary.mjs'
+      - '.github/workflows/den-2843-infra-provider-canary.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_PASSWORD: postgres
+        ports:
+          - 127.0.0.1:5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    steps:
+      - name: Check out exact test head
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          path: test-harness
+          persist-credentials: false
+      - name: Verify exact test revision
+        working-directory: test-harness
+        env:
+          EXPECTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+      - name: Set up Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: '22'
+      - name: Check out exact remediated production infra
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          repository: flags-2-env/flags-2-env-infra
+          ref: b05f40645109dbbc4a735f672f269ac18bdbb6b7
+          path: production-infra
+          persist-credentials: false
+      - name: Verify exact production revision and static provider boundary
+        run: |
+          set -euo pipefail
+          test "$(git -C production-infra rev-parse HEAD)" = 'b05f40645109dbbc4a735f672f269ac18bdbb6b7'
+          node --check test-harness/canary/verify-infra-provider-boundary.mjs
+          node test-harness/canary/verify-infra-provider-boundary.mjs production-infra | tee "$RUNNER_TEMP/infra-canary.json"
+      - name: Replay all four production SQL lanes in disposable PostgreSQL
+        env:
+          PGHOST: 127.0.0.1
+          PGPORT: '5432'
+          PGUSER: postgres
+          PGPASSWORD: postgres
+          PGPASSFILE: /dev/null
+        run: |
+          set -euo pipefail
+          for provider in supabase neon; do
+            for lane in auth admin; do
+              db="flags2env_${provider}_${lane}_${GITHUB_RUN_ID}_${GITHUB_RUN_ATTEMPT}"
+              createdb --maintenance-db=postgres --template=template0 "$db"
+              sql="production-infra/${provider}/${lane}/migrations/202609070001_shared_auth_runtime_policy.sql"
+              test -f "$sql"
+              psql -X --no-password --set=ON_ERROR_STOP=1 --dbname "$db" --file "$sql" >/dev/null
+              psql -X --no-password --set=ON_ERROR_STOP=1 --dbname "$db" --file "$sql" >/dev/null
+              count="$(psql -X --no-password --set=ON_ERROR_STOP=1 --dbname "$db" -Atc 'select count(*) from flags_2_env.shared_auth_runtime_policy;')"
+              test "$count" = '1'
+            done
+          done
+      - name: Prove test and production checkouts stayed clean
+        run: |
+          set -euo pipefail
+          git -C test-harness diff --exit-code
+          git -C production-infra diff --exit-code
+      - name: Retain bounded canary receipt
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: den-2843-flags-infra-canary-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/infra-canary.json
+          if-no-files-found: warn
+          retention-days: 30
